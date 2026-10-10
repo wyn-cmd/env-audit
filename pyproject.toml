@@ -1,0 +1,29 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "env-audit"
+version = "0.1.0"
+description = "Report environment variables that source code reads but the reference env file never declares, and declarations nothing reads."
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "MIT" }
+authors = [{ name = "wyn-cmd" }]
+keywords = ["dotenv", "environment-variables", "static-analysis", "cli", "ci"]
+classifiers = [
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Topic :: Software Development :: Quality Assurance",
+]
+
+[project.urls]
+Homepage = "https://github.com/wyn-cmd/env-audit"
+
+[project.scripts]
+env-audit = "env_audit.cli:main"
+
+[tool.setuptools]
+packages = ["env_audit"]
