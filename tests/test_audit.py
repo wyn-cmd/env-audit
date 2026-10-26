@@ -1,8 +1,20 @@
 import os
+import shutil
+import subprocess
 import tempfile
 import unittest
+from unittest import mock
 
 from env_audit.audit import is_git_ignored, run_audit, rough_ignore_match
+
+
+# Isolates the git calls in these tests from the machine wide configuration, so
+# a global excludes file cannot make a repository test answer differently.
+CLEAN_GIT_ENV = {
+    "GIT_CONFIG_GLOBAL": os.devnull,
+    "GIT_CONFIG_SYSTEM": os.devnull,
+    "GIT_CONFIG_NOSYSTEM": "1",
+}
 
 
 def write(directory, relative, text):
@@ -13,6 +25,23 @@ def write(directory, relative, text):
     with open(path, "w", encoding="utf-8") as handle:
         handle.write(text)
     return path
+
+
+# Creates a repository at root, or skips the calling test when git cannot be
+# used, since these tests are about git's answer and not about the fallback.
+def make_repository(case, root):
+    git_bin = shutil.which("git") or ""
+    if not git_bin:
+        case.skipTest("git is not installed")
+        return
+    completed = subprocess.run(
+        [git_bin, "init", "--quiet", root],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        env={**os.environ, **CLEAN_GIT_ENV},
+    )
+    if completed.returncode != 0:
+        case.skipTest("git init failed in this environment")
 
 
 class RunAuditTest(unittest.TestCase):
@@ -63,6 +92,15 @@ class RunAuditTest(unittest.TestCase):
             self.assertEqual(result["reference"], "custom.env")
             self.assertEqual(result["undocumented"], [])
 
+    def test_missing_explicit_reference_does_not_fall_back_to_the_example(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            write(tmp, ".env.example", "TOKEN=\n")
+            write(tmp, "app.py", 'import os\na = os.getenv("TOKEN")\n')
+            result = run_audit(tmp, reference="not-here.env")
+            self.assertIsNone(result["reference"])
+            self.assertEqual(result["declared_count"], 0)
+            self.assertEqual([entry[0] for entry in result["undocumented"]], ["TOKEN"])
+
     def test_exposed_env_is_reported(self):
         with tempfile.TemporaryDirectory() as tmp:
             write(tmp, ".env", "SECRET=1\n")
@@ -102,6 +140,32 @@ class IgnoreMatchTest(unittest.TestCase):
 
     def test_git_ignored_returns_false_without_any_rule(self):
         with tempfile.TemporaryDirectory() as tmp:
+            self.assertFalse(is_git_ignored(tmp, ".env"))
+
+
+# Inside a real repository git answers check-ignore itself, so these cover the
+# branch the fallback tests above never reach.
+class GitRepositoryIgnoreTest(unittest.TestCase):
+    # Keeps the machine wide git configuration out of git's answer while the
+    # audit module runs its own subprocess.
+    def setUp(self):
+        patcher = mock.patch.dict(os.environ, CLEAN_GIT_ENV)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def test_repository_reports_a_matching_rule(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            make_repository(self, tmp)
+            write(tmp, ".gitignore", ".env\n")
+            self.assertTrue(is_git_ignored(tmp, ".env"))
+
+    def test_repository_answer_wins_over_the_rough_match(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            make_repository(self, tmp)
+            # A trailing slash means directories only, so git does not ignore
+            # the .env file while the rough matcher would after stripping it.
+            write(tmp, ".gitignore", "/.env/\n")
+            self.assertTrue(rough_ignore_match(tmp, ".env"))
             self.assertFalse(is_git_ignored(tmp, ".env"))
 
 
