@@ -8,8 +8,7 @@ from unittest import mock
 from env_audit.audit import is_git_ignored, run_audit, rough_ignore_match
 
 
-# Isolates the git calls in these tests from the machine wide configuration, so
-# a global excludes file cannot make a repository test answer differently.
+# Isolates git calls from machine-wide configuration so global excludes do not affect tests.
 CLEAN_GIT_ENV = {
     "GIT_CONFIG_GLOBAL": os.devnull,
     "GIT_CONFIG_SYSTEM": os.devnull,
@@ -27,20 +26,20 @@ def write(directory, relative, text):
     return path
 
 
-# Creates a repository at root, or skips the calling test when git cannot be
-# used, since these tests are about git's answer and not about the fallback.
+# Creates a repository at root or skips the test if git is not installed or fails to init.
 def make_repository(case, root):
-    git_bin = shutil.which("git") or ""
+    git_bin = shutil.which("git")
     if not git_bin:
         case.skipTest("git is not installed")
         return
-    completed = subprocess.run(
+
+    res = subprocess.run(
         [git_bin, "init", "--quiet", root],
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
         env={**os.environ, **CLEAN_GIT_ENV},
     )
-    if completed.returncode != 0:
+    if res.returncode != 0:
         case.skipTest("git init failed in this environment")
 
 
@@ -50,7 +49,9 @@ class RunAuditTest(unittest.TestCase):
             write(tmp, ".env.example", "API_KEY=abc\nOLD_TOKEN=gone\n")
             write(tmp, "app.py", 'import os\na = os.getenv("API_KEY")\nb = os.getenv("NEW_URL")\n')
             result = run_audit(tmp)
-            self.assertEqual([entry[0] for entry in result["undocumented"]], ["NEW_URL"])
+            
+            undocumented = [entry[0] for entry in result["undocumented"]]
+            self.assertEqual(undocumented, ["NEW_URL"])
             self.assertEqual(result["unused"], ["OLD_TOKEN"])
             self.assertEqual(result["reference"], ".env.example")
             self.assertEqual(result["declared_count"], 2)
@@ -70,9 +71,11 @@ class RunAuditTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             write(tmp, ".env.example", "NODE_ENV=development\n")
             write(tmp, "app.py", 'import os\na = os.getenv("NODE_ENV")\n')
+            
             plain = run_audit(tmp)
             self.assertEqual(plain["undocumented"], [])
             self.assertEqual(plain["unused"], [])
+            
             ignored = run_audit(tmp, ignore=["NODE_ENV"])
             self.assertEqual(ignored["undocumented"], [])
             self.assertEqual(ignored["unused"], [])
@@ -82,7 +85,7 @@ class RunAuditTest(unittest.TestCase):
             write(tmp, "app.py", 'import os\na = os.getenv("ONLY_ONE")\n')
             result = run_audit(tmp)
             self.assertIsNone(result["reference"])
-            self.assertEqual([entry[0] for entry in result["undocumented"]], ["ONLY_ONE"])
+            self.assertEqual([e[0] for e in result["undocumented"]], ["ONLY_ONE"])
 
     def test_explicit_reference_path_is_used(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -99,7 +102,7 @@ class RunAuditTest(unittest.TestCase):
             result = run_audit(tmp, reference="not-here.env")
             self.assertIsNone(result["reference"])
             self.assertEqual(result["declared_count"], 0)
-            self.assertEqual([entry[0] for entry in result["undocumented"]], ["TOKEN"])
+            self.assertEqual([e[0] for e in result["undocumented"]], ["TOKEN"])
 
     def test_exposed_env_is_reported(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -143,12 +146,10 @@ class IgnoreMatchTest(unittest.TestCase):
             self.assertFalse(is_git_ignored(tmp, ".env"))
 
 
-# Inside a real repository git answers check-ignore itself, so these cover the
-# branch the fallback tests above never reach.
+# Covers cases where git is used to determine ignore status.
 class GitRepositoryIgnoreTest(unittest.TestCase):
-    # Keeps the machine wide git configuration out of git's answer while the
-    # audit module runs its own subprocess.
     def setUp(self):
+        # Prevent machine-wide git config from affecting the results of the audit module.
         patcher = mock.patch.dict(os.environ, CLEAN_GIT_ENV)
         patcher.start()
         self.addCleanup(patcher.stop)
@@ -162,8 +163,7 @@ class GitRepositoryIgnoreTest(unittest.TestCase):
     def test_repository_answer_wins_over_the_rough_match(self):
         with tempfile.TemporaryDirectory() as tmp:
             make_repository(self, tmp)
-            # A trailing slash means directories only, so git does not ignore
-            # the .env file while the rough matcher would after stripping it.
+            # A trailing slash tells git to ignore directories only, so the file remains non-ignored.
             write(tmp, ".gitignore", "/.env/\n")
             self.assertTrue(rough_ignore_match(tmp, ".env"))
             self.assertFalse(is_git_ignored(tmp, ".env"))
